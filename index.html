@@ -66,6 +66,14 @@
 @keyframes bomb-pop{from{opacity:.85;transform:translate(-50%,-50%) scale(.5)}to{opacity:0;transform:translate(-50%,-50%) scale(3.3)}}
 @media(max-width:420px){.challenge-cue{font-size:9px;top:47px;padding:5px 9px}.hype-sticker{font-size:8px}.hype-sticker:nth-child(2){font-size:9px}}
 @media(prefers-reduced-motion:reduce){.bomb-spark,.challenge-cue:before{animation:none!important}.hype-layer,.bomb-burst{display:none!important}}
+/* A visible danger cue on each lost heart, without covering controls or products. */
+.danger-pulse{position:absolute;inset:0;z-index:9;pointer-events:none;border:3px solid #d73b55;background:radial-gradient(ellipse at center,transparent 45%,#d92c4724 100%);box-shadow:inset 0 0 58px 12px #dc304b66;opacity:0}
+.danger-pulse.is-active{animation:heart-danger-pulse .65s ease-out both}
+.heart-warning{position:absolute;top:91px;left:50%;transform:translateX(-50%);z-index:10;display:flex;align-items:center;gap:7px;max-width:calc(100% - 28px);padding:8px 13px;border:1px solid #d44b60;border-radius:24px;background:#fff0f2f5;box-shadow:0 4px 18px #a02a4226;color:#a9213d;font-size:11px;font-weight:bold;letter-spacing:.25px;white-space:nowrap;pointer-events:none}
+.heart-warning svg{width:17px;height:17px;flex-shrink:0}
+@keyframes heart-danger-pulse{0%{opacity:0}18%,40%{opacity:1}100%{opacity:0}}
+@media(max-width:420px){.heart-warning{top:84px;font-size:10px;padding:7px 11px}}
+@media(prefers-reduced-motion:reduce){.danger-pulse.is-active{animation:none!important;opacity:.65}}
 
 </style>
 </head>
@@ -98,6 +106,8 @@
             <div id="ambient-products" class="ambient-products" aria-hidden="true"></div>
             <div id="items-layer" aria-hidden="true"></div>
             <div id="effects-layer" aria-hidden="true"></div>
+            <div id="danger-pulse" class="danger-pulse" aria-hidden="true" hidden></div>
+            <div id="heart-warning" class="heart-warning" role="status" aria-live="assertive" aria-atomic="true" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 2.3 18a2 2 0 0 0 1.7 3h16a2 2 0 0 0 1.7-3l-8-14.1a2 2 0 0 0-3.4 0Z"/><path d="M12 8v5m0 4h.01"/></svg><span id="heart-warning-text">Heart lost</span></div>
             <div id="hype-layer" class="hype-layer" aria-hidden="true" hidden></div>
             <div id="challenge-cue" class="challenge-cue" role="status" aria-live="polite" hidden></div>
             <div id="basket" class="basket" aria-hidden="true"><img id="basket-image" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiM5NjM2NTMiIHN0cm9rZS13aWR0aD0iMS43IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwYXRoIGQ9Im0xNSAxMS0xIDkiLz48cGF0aCBkPSJtMTkgMTEtNC03Ii8+PHBhdGggZD0iTTIgMTFoMjAiLz48cGF0aCBkPSJtMy41IDExIDEuNiA3LjRhMiAyIDAgMCAwIDIgMS42aDkuOGEyIDIgMCAwIDAgMi0xLjZsMS43LTcuNCIvPjxwYXRoIGQ9Ik00LjUgMTUuNWgxNSIvPjxwYXRoIGQ9Im01IDExIDQtNyIvPjxwYXRoIGQ9Im05IDExIDEgOSIvPjwvc3ZnPg==" alt=""><span class="basket-brand">be!MYN</span></div>
@@ -1009,6 +1019,28 @@ $('leaderboard-close').addEventListener('click',()=>$('leaderboard-dialog').clos
 $('refresh-leaderboard').addEventListener('click',renderLeaderboard);
 retryUpload.addEventListener('click',()=>{if(finalState)postPublicScore(finalState,roundVersion);});
 
+// A single short pulse marks an actual lost heart, including the final heart.
+let heartWarningTimer;
+function clearHeartWarning() {
+  clearTimeout(heartWarningTimer);
+  heartWarningTimer=undefined;
+  $('danger-pulse').classList.remove('is-active');
+  $('danger-pulse').hidden=true;
+  $('heart-warning').hidden=true;
+}
+function showHeartWarning() {
+  clearHeartWarning();
+  const pulse=$('danger-pulse');
+  const warning=$('heart-warning');
+  const remaining=engine?.state.lives;
+  $('heart-warning-text').textContent=remaining===0?'Heart lost · game over':`Heart lost · ${remaining} left`;
+  pulse.hidden=false;
+  warning.hidden=false;
+  // Restart cleanly if two losses occur close together; no repeating strobe.
+  void pulse.offsetWidth;
+  pulse.classList.add('is-active');
+  heartWarningTimer=setTimeout(clearHeartWarning,650);
+}
 // Challenges use the engine's active-play clock, so pause and retry stay in sync.
 function syncChallenge(state) {
   const challenge=state.challenge;
@@ -1053,6 +1085,7 @@ function ui(state) {
 }
 function showScreen(next) {
   screen=next;
+  if(next==='start'||next==='play')clearHeartWarning();
   $('game-field').scrollTop=0;$('game-field').scrollLeft=0;
   $('start-overlay').hidden=next!=='start';
   $('pause-overlay').hidden=next!=='pause';
@@ -1122,7 +1155,7 @@ function effect(event) {
   } else if(event.type==='miss'||event.type==='hit') {
     tone('damage');toast(event.type==='hit'?'Bomb! One heart down.':'Missed a fave. One heart down.');
     if(event.type==='hit'&&!reducedMotion){const burst=document.createElement('span');burst.className='bomb-burst';burst.style.left=event.x+'px';burst.style.top=event.y+'px';$('effects-layer').appendChild(burst);setTimeout(()=>burst.remove(),450);}
-    $('game-field').classList.remove('damage-flash');requestAnimationFrame(()=>$('game-field').classList.add('damage-flash'));setTimeout(()=>$('game-field').classList.remove('damage-flash'),400);
+    showHeartWarning();
   }
 }
 function end(state) {
