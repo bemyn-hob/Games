@@ -733,87 +733,87 @@ return {ScoreStore};
 })();
 
 const {Leaderboard} = (() => {
-/** Google Sheets + Apps Script leaderboard. */
+/** Google Sheets + Apps Script shared leaderboard. */
 const normalizeName = name => String(name || '').normalize('NFKC').replace(/[\u0000-\u001f\u007f<>]/g, '').trim().replace(/\s+/g, ' ').slice(0, 24);
 
 class Leaderboard {
-  constructor({ url = '' } = {}) {
-    this.url = String(url).trim();
+  constructor(endpoint = '') {
+    this.url = String(endpoint || '').trim();
     this.run = null;
   }
 
   get configured() {
-    return /^https:\/\/script\.google\.com\/(?:a\/macros\/[^/]+\/s|macros\/s)\/[^/]+\/exec(?:\?.*)?$/i.test(this.url);
+    return /^https:\/\/script\.google\.com\//i.test(this.url);
   }
 
-  // Kept for compatibility with the existing game flow. Apps Script needs no browser auth session.
   setPersistence() {}
   forget() { this.run = null; }
-  async ready() { return this.configured; }
+  async ready() { return true; }
 
-  /** Create a local run ID. The score itself is posted only after the round finishes. */
   async startRun(name) {
-    if (!this.configured) throw new Error('The shared leaderboard has not been connected yet.');
     const nickname = normalizeName(name);
     if (!nickname) throw new Error('Enter a nickname to join the leaderboard.');
-    const runId = globalThis.crypto?.randomUUID?.() || `run-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+    if (!this.configured) throw new Error('The shared leaderboard has not been connected yet.');
+
+    const runId = globalThis.crypto?.randomUUID?.() || `run-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     this.run = { run_id: runId, nickname };
     return this.run;
   }
 
-  /** Submit the completed score to the Google Sheet through Apps Script. */
-  async submitRun({ score, caught, elapsed, level }) {
+  async submitRun({ score }) {
     const run = this.run;
     if (!run?.run_id) throw new Error('This round was not started on the shared leaderboard. Try a new round.');
-    if (!Number.isSafeInteger(score) || score < 0 || !Number.isSafeInteger(caught) || caught < 0 || !Number.isFinite(elapsed) || elapsed < 0 || !Number.isSafeInteger(level)) {
-      throw new Error('This score could not be verified. Please try a new round.');
+    if (!Number.isSafeInteger(score) || score < 0) throw new Error('This score could not be verified. Please try a new round.');
+
+    const payload = JSON.stringify({
+      action: 'submitScore',
+      player: run.nickname,
+      score,
+      runId: run.run_id,
+    });
+
+    // Apps Script Web Apps are easiest to call with text/plain to avoid
+    // browser CORS preflight; doPost() still receives the JSON body.
+    const response = await fetch(this.url, {
+      method: 'POST',
+      mode: 'cors',
+      credentials: 'omit',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: payload,
+    });
+
+    const text = await response.text();
+    let result = null;
+    try { result = JSON.parse(text); } catch { /* Apps Script can return a redirect/body wrapper. */ }
+
+    if (!response.ok || result?.success === false) {
+      throw new Error(result?.error || 'The shared leaderboard could not save this score.');
     }
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 12000);
-    try {
-      // text/plain keeps this a simple cross-origin request and avoids an OPTIONS preflight.
-      const response = await fetch(this.url, {
-        method: 'POST',
-        credentials: 'omit',
-        redirect: 'follow',
-        signal: controller.signal,
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({
-          action: 'submitScore',
-          player: run.nickname,
-          score,
-          runId: run.run_id,
-          caught,
-          elapsed: Math.round(elapsed * 1000) / 1000,
-          level,
-        }),
-      });
-      if (!response.ok) throw new Error('The shared leaderboard could not save this score.');
-      const result = await response.json().catch(() => null);
-      if (!result?.success) throw new Error(result?.error || 'The shared leaderboard returned an unexpected response.');
-      this.run = { ...run, submitted: true, result };
-      return result;
-    } catch (error) {
-      if (error.name === 'AbortError' || error instanceof TypeError) throw new Error('The leaderboard could not connect. Check your connection and try again.');
-      throw error;
-    } finally { clearTimeout(timer); }
+    return result || { success: true };
   }
 
-  /** Read the Top 10 returned by Apps Script. The Apps Script sorts highest score first. */
   async getTop() {
     if (!this.configured) throw new Error('The shared leaderboard has not been connected yet.');
-    const separator = this.url.includes('?') ? '&' : '?';
-    const response = await fetch(`${this.url}${separator}action=leaderboard&_=${Date.now()}`, {
-      method: 'GET', credentials: 'omit', redirect: 'follow', cache: 'no-store'
+
+    const response = await fetch(`${this.url}?action=leaderboard&t=${Date.now()}`, {
+      method: 'GET',
+      mode: 'cors',
+      credentials: 'omit',
+      cache: 'no-store',
     });
-    if (!response.ok) throw new Error('The shared leaderboard is unavailable.');
-    const result = await response.json().catch(() => null);
-    if (!result?.success || !Array.isArray(result.leaderboard)) throw new Error(result?.error || 'The leaderboard returned an unexpected response.');
-    return result.leaderboard.slice(0, 10)
-      .filter(row => typeof row.nickname === 'string' && Number.isFinite(Number(row.score)))
-      .map(row => ({ nickname: normalizeName(row.nickname), score: Number(row.score) }))
-      .sort((a, b) => b.score - a.score || a.nickname.localeCompare(b.nickname));
+
+    const result = await response.json();
+    if (!response.ok || result?.success === false) {
+      throw new Error(result?.error || 'The shared leaderboard is unavailable.');
+    }
+
+    const entries = Array.isArray(result?.leaderboard) ? result.leaderboard : [];
+    return entries
+      .filter(row => typeof row.nickname === 'string' && Number.isSafeInteger(Number(row.score)))
+      .map(row => ({ nickname: row.nickname, score: Number(row.score) }))
+      .sort((a, b) => b.score - a.score || a.nickname.localeCompare(b.nickname))
+      .slice(0, 10);
   }
 }
 
@@ -822,10 +822,11 @@ return {Leaderboard};
 
 const {LEADERBOARD_CONFIG} = (() => {
 const LEADERBOARD_CONFIG = {
-  url: 'https://script.google.com/a/macros/myntra.com/s/AKfycbwqMfgCVTe8TptT8YOwrKrbPtSsRQRndL2IAWuCnCfCrKd_5FZUlyjIGF8Lu6C13TazAA/exec'
+  endpoint: 'https://script.google.com/a/macros/myntra.com/s/AKfycbwqMfgCVTe8TptT8YOwrKrbPtSsRQRndL2IAWuCnCfCrKd_5FZUlyjIGF8Lu6C13TazAA/exec',
 };
 return {LEADERBOARD_CONFIG};
 })();
+
 
 
 const $ = id => document.getElementById(id);
@@ -843,7 +844,7 @@ const products = [
 let storage;
 try { storage = window.localStorage; } catch { storage = null; }
 const scores = new ScoreStore(storage, document);
-const leaderboard = new Leaderboard(LEADERBOARD_CONFIG);
+const leaderboard = new Leaderboard(LEADERBOARD_CONFIG.endpoint);
 let publicRun = false;
 let roundVersion = 0;
 let finalState = null;
@@ -887,8 +888,8 @@ const retryUpload=document.createElement('button');retryUpload.id='retry-upload'
 if(leaderboard.configured){
   $('public-opt-in').hidden=false;
   $('leaderboard-scope').textContent='ALL PLAYERS · TOP 10';
-  $('leaderboard-description').textContent='The glow-getters to beat. One best score per nickname.';
-  const notice=document.createElement('p');notice.textContent='If you choose the public leaderboard, your nickname and score are sent to the event leaderboard in Google Sheets. Clearing this browser does not remove already published scores.';$('privacy-status').before(notice);
+  $('leaderboard-description').textContent='The glow-getters to beat. One best score per browser identity.';
+  const notice=document.createElement('p');notice.textContent='If you choose the public leaderboard, your nickname and score are sent to the connected leaderboard service. With saving on, your anonymous player identity is also kept in this browser. Clearing this browser does not remove already published scores.';$('privacy-status').before(notice);
   const privacyCopy=$('privacy-dialog').querySelector('h2 + p');privacyCopy.textContent='With your permission, this game saves your nickname, personal best, and device record in this browser. A preference cookie remembers your choice. No analytics or advertising cookies.';
 }
 
