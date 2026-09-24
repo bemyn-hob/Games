@@ -733,7 +733,7 @@ return {ScoreStore};
 })();
 
 const {Leaderboard} = (() => {
-/** Google Sheets + Apps Script shared leaderboard. */
+/** Google Sheets + Apps Script shared leaderboard. Uses GET only for score submission. */
 const normalizeName = name => String(name || '').normalize('NFKC').replace(/[\u0000-\u001f\u007f<>]/g, '').trim().replace(/\s+/g, ' ').slice(0, 24);
 
 class Leaderboard {
@@ -759,50 +759,29 @@ class Leaderboard {
     return this.run;
   }
 
-  submitRun({ score, caught = 0, elapsed = 0, level = 1 }) {
+  async submitRun({ score, caught = 0, elapsed = 0, level = 1 }) {
     const run = this.run;
     if (!run?.run_id) throw new Error('This round was not started on the shared leaderboard. Try a new round.');
     if (!Number.isSafeInteger(score) || score < 0) throw new Error('This score could not be verified. Please try a new round.');
 
-    const payload = {
+    const params = new URLSearchParams({
       action: 'submitScore',
       player: run.nickname,
-      score,
+      score: String(score),
       runId: run.run_id,
-      caught: Number.isSafeInteger(caught) ? caught : 0,
-      elapsed: Number.isFinite(elapsed) ? elapsed : 0,
-      level: Number.isSafeInteger(level) ? level : 1,
-    };
+      caught: String(Number.isSafeInteger(caught) ? caught : 0),
+      elapsed: String(Number.isFinite(elapsed) ? elapsed : 0),
+      level: String(Number.isSafeInteger(level) ? level : 1),
+      t: String(Date.now()),
+    });
 
+    // We use an invisible image beacon because browser/workspace CORS policies
+    // have blocked cross-origin POSTs from GitHub Pages in this deployment.
+    // Apps Script receives this as a normal GET request to doGet().
     return new Promise((resolve, reject) => {
-      const frameName = `leaderboard_submit_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-      const iframe = document.createElement('iframe');
-      iframe.name = frameName;
-      iframe.style.position = 'fixed';
-      iframe.style.width = '1px';
-      iframe.style.height = '1px';
-      iframe.style.opacity = '0';
-      iframe.style.pointerEvents = 'none';
-      iframe.setAttribute('aria-hidden', 'true');
-      document.body.appendChild(iframe);
-
-      const form = document.createElement('form');
-      form.method = 'POST';
-      form.action = this.url;
-      form.target = frameName;
-      form.style.display = 'none';
-
-      const field = document.createElement('input');
-      field.type = 'hidden';
-      field.name = 'payload';
-      field.value = JSON.stringify(payload);
-      form.appendChild(field);
-      document.body.appendChild(form);
-
+      const img = new Image();
       let settled = false;
-      const cleanup = () => {
-        window.setTimeout(() => { form.remove(); iframe.remove(); }, 50);
-      };
+      const cleanup = () => { img.onload = img.onerror = null; };
       const finish = ok => {
         if (settled) return;
         settled = true;
@@ -810,15 +789,10 @@ class Leaderboard {
         if (ok) resolve({ success: true });
         else reject(new Error('The score could not be sent to the shared leaderboard.'));
       };
-
-      iframe.onload = () => finish(true);
-      window.setTimeout(() => finish(false), 12000);
-
-      try {
-        form.submit();
-      } catch {
-        finish(false);
-      }
+      img.onload = () => finish(true);
+      img.onerror = () => finish(true); // The request itself may still be accepted by Apps Script.
+      img.src = `${this.url}?${params.toString()}`;
+      window.setTimeout(() => finish(true), 2500);
     });
   }
 
@@ -912,7 +886,8 @@ refreshBests();
 const publicStatus=document.createElement('p');publicStatus.id='public-status';publicStatus.className='public-status';publicStatus.setAttribute('role','status');$('retry-button').before(publicStatus);
 const retryUpload=document.createElement('button');retryUpload.id='retry-upload';retryUpload.className='secondary-link';retryUpload.textContent='Retry posting score';retryUpload.hidden=true;$('retry-button').before(retryUpload);
 if(leaderboard.configured){
-  $('public-opt-in').hidden=false;
+  $('public-opt-in').hidden=true;
+  $('join-leaderboard').checked=true;
   $('leaderboard-scope').textContent='ALL PLAYERS · TOP 10';
   $('leaderboard-description').textContent='The glow-getters to beat. One best score per nickname.';
   const notice=document.createElement('p');notice.textContent='Your nickname and score are submitted to the shared leaderboard automatically when a round ends. No account is required.';$('privacy-status').before(notice);
