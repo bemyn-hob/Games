@@ -733,7 +733,7 @@ return {ScoreStore};
 })();
 
 const {Leaderboard} = (() => {
-/** Google Sheets + Apps Script shared leaderboard. Uses GET only for score submission. */
+/** Google Sheets + Apps Script shared leaderboard. */
 const normalizeName = name => String(name || '').normalize('NFKC').replace(/[\u0000-\u001f\u007f<>]/g, '').trim().replace(/\s+/g, ' ').slice(0, 24);
 
 class Leaderboard {
@@ -741,15 +741,10 @@ class Leaderboard {
     this.url = String(endpoint || '').trim();
     this.run = null;
   }
-
-  get configured() {
-    return /^https:\/\/script\.google\.com\//i.test(this.url);
-  }
-
+  get configured() { return /^https:\/\/script\.google\.com\//i.test(this.url); }
   setPersistence() {}
   forget() { this.run = null; }
   async ready() { return true; }
-
   async startRun(name) {
     const nickname = normalizeName(name);
     if (!nickname) throw new Error('Enter a nickname to join the leaderboard.');
@@ -758,65 +753,48 @@ class Leaderboard {
     this.run = { run_id: runId, nickname };
     return this.run;
   }
-
-  async submitRun({ score, caught = 0, elapsed = 0, level = 1 }) {
+  submitRun({ score, caught = 0, elapsed = 0, level = 1 }) {
     const run = this.run;
     if (!run?.run_id) throw new Error('This round was not started on the shared leaderboard. Try a new round.');
     if (!Number.isSafeInteger(score) || score < 0) throw new Error('This score could not be verified. Please try a new round.');
-
     const params = new URLSearchParams({
-      action: 'submitScore',
-      player: run.nickname,
-      score: String(score),
-      runId: run.run_id,
-      caught: String(Number.isSafeInteger(caught) ? caught : 0),
-      elapsed: String(Number.isFinite(elapsed) ? elapsed : 0),
-      level: String(Number.isSafeInteger(level) ? level : 1),
-      t: String(Date.now()),
+      action:'submitScore', player:run.nickname, score:String(score), runId:run.run_id,
+      caught:String(Number.isSafeInteger(caught) ? caught : 0), elapsed:String(Number.isFinite(elapsed) ? elapsed : 0),
+      level:String(Number.isSafeInteger(level) ? level : 1), t:String(Date.now())
     });
-
-    // We use an invisible image beacon because browser/workspace CORS policies
-    // have blocked cross-origin POSTs from GitHub Pages in this deployment.
-    // Apps Script receives this as a normal GET request to doGet().
     return new Promise((resolve, reject) => {
-      const img = new Image();
-      let settled = false;
-      const cleanup = () => { img.onload = img.onerror = null; };
-      const finish = ok => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        if (ok) resolve({ success: true });
-        else reject(new Error('The score could not be sent to the shared leaderboard.'));
-      };
-      img.onload = () => finish(true);
-      img.onerror = () => finish(true); // The request itself may still be accepted by Apps Script.
+      const img = new Image(); let settled = false;
+      const cleanup = () => { img.onload=null; img.onerror=null; img.src=''; };
+      const finish = ok => { if(settled)return; settled=true; cleanup(); ok ? resolve({success:true}) : reject(new Error('The score could not be sent to the shared leaderboard.')); };
+      img.onload=()=>finish(true); img.onerror=()=>finish(true);
+      setTimeout(()=>finish(true),3000);
       img.src = `${this.url}?${params.toString()}`;
-      window.setTimeout(() => finish(true), 2500);
     });
   }
-
-  async getTop() {
-    if (!this.configured) throw new Error('The shared leaderboard has not been connected yet.');
-    const response = await fetch(`${this.url}?action=leaderboard&t=${Date.now()}`, {
-      method: 'GET',
-      mode: 'cors',
-      credentials: 'omit',
-      cache: 'no-store',
+  getTop() {
+    if (!this.configured) return Promise.reject(new Error('The shared leaderboard has not been connected yet.'));
+    return new Promise((resolve, reject) => {
+      const callbackName = `bemynLeaderboard_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const script = document.createElement('script');
+      let finished=false;
+      const cleanup=()=>{clearTimeout(timer); delete globalThis[callbackName]; script.remove();};
+      const fail=err=>{if(finished)return;finished=true;cleanup();reject(err);};
+      const timer=setTimeout(()=>fail(new Error('The leaderboard is taking a breather. Please try again in a moment.')),10000);
+      globalThis[callbackName]=result=>{
+        if(finished)return; finished=true; cleanup();
+        if(!result || result.success===false){ reject(new Error(result?.error || 'The shared leaderboard is unavailable.')); return; }
+        const entries=Array.isArray(result.leaderboard)?result.leaderboard:[];
+        resolve(entries.filter(r=>typeof r.nickname==='string' && Number.isSafeInteger(Number(r.score)))
+          .map(r=>({nickname:r.nickname,score:Number(r.score)}))
+          .sort((a,b)=>b.score-a.score || a.nickname.localeCompare(b.nickname)).slice(0,10));
+      };
+      script.async=true;
+      script.onerror=()=>fail(new Error('The leaderboard is taking a breather. Please try again in a moment.'));
+      script.src=`${this.url}?action=leaderboard&callback=${encodeURIComponent(callbackName)}&t=${Date.now()}`;
+      document.head.appendChild(script);
     });
-    const result = await response.json();
-    if (!response.ok || result?.success === false) {
-      throw new Error(result?.error || 'The shared leaderboard is unavailable.');
-    }
-    const entries = Array.isArray(result?.leaderboard) ? result.leaderboard : [];
-    return entries
-      .filter(row => typeof row.nickname === 'string' && Number.isSafeInteger(Number(row.score)))
-      .map(row => ({ nickname: row.nickname, score: Number(row.score) }))
-      .sort((a, b) => b.score - a.score || a.nickname.localeCompare(b.nickname))
-      .slice(0, 10);
   }
 }
-
 return {Leaderboard};
 })();
 
@@ -826,6 +804,7 @@ const LEADERBOARD_CONFIG = {
 };
 return {LEADERBOARD_CONFIG};
 })();
+
 
 
 
@@ -886,8 +865,7 @@ refreshBests();
 const publicStatus=document.createElement('p');publicStatus.id='public-status';publicStatus.className='public-status';publicStatus.setAttribute('role','status');$('retry-button').before(publicStatus);
 const retryUpload=document.createElement('button');retryUpload.id='retry-upload';retryUpload.className='secondary-link';retryUpload.textContent='Retry posting score';retryUpload.hidden=true;$('retry-button').before(retryUpload);
 if(leaderboard.configured){
-  $('public-opt-in').hidden=true;
-  $('join-leaderboard').checked=true;
+  $('public-opt-in').hidden=false;
   $('leaderboard-scope').textContent='ALL PLAYERS · TOP 10';
   $('leaderboard-description').textContent='The glow-getters to beat. One best score per nickname.';
   const notice=document.createElement('p');notice.textContent='Your nickname and score are submitted to the shared leaderboard automatically when a round ends. No account is required.';$('privacy-status').before(notice);
