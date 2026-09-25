@@ -167,7 +167,7 @@ em{font-family:var(--serif);font-weight:normal;font-style:italic;color:var(--pin
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const rows = await res.json();
       if (!Array.isArray(rows)) throw new Error('Unexpected response');
-      return rows.slice(0, 10)
+      return rows.slice(0, 25)
         .filter(r => typeof r.nickname === 'string' && Number.isFinite(Number(r.score)))
         .map(r => ({
           nickname: r.nickname,
